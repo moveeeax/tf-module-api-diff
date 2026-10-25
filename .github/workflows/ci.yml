@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.22.x', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - name: go build
+        run: go build ./...
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build the CLI
+        run: go build -o tf-module-api-diff ./cmd/tf-module-api-diff
+
+      - name: The documented example pairs classify as documented
+        run: |
+          expect_exit() {
+            want=$1; shift
+            set +e
+            ./tf-module-api-diff "$@" > /tmp/out.txt 2>&1
+            got=$?
+            set -e
+            if [ "$got" -ne "$want" ]; then
+              echo "exit $got, want $want: $*"
+              cat /tmp/out.txt
+              exit 1
+            fi
+          }
+
+          expect_exit 0 --from-dir examples/vpc-v1.0.0 --to-dir examples/vpc-v1.0.0
+          expect_exit 0 --from-dir examples/vpc-v1.0.0 --to-dir examples/vpc-v1.1.0
+          expect_exit 0 --from-dir examples/vpc-v1.1.0 --to-dir examples/vpc-v1.1.1
+          expect_exit 1 --from-dir examples/vpc-v1.1.0 --to-dir examples/vpc-v2.0.0
+          expect_exit 1 --from-dir examples/vpc-v1.0.0 --to-dir examples/vpc-v1.1.0 --expect patch
+          expect_exit 0 --from-dir examples/vpc-v1.1.0 --to-dir examples/vpc-v2.0.0 --fail-on never
+          expect_exit 2 --from-dir examples/vpc-v1.0.0 --to-dir examples/nope
+
+      - name: The markdown report is renderable
+        run: |
+          set +e
+          ./tf-module-api-diff \
+            --from-dir examples/vpc-v1.1.0 --to-dir examples/vpc-v2.0.0 \
+            --format markdown --fail-on never >> "$GITHUB_STEP_SUMMARY"
+          set -e

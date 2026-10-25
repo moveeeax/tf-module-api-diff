@@ -1,0 +1,102 @@
+name: 'Terraform module API diff'
+description: 'Classify a Terraform module API change as major, minor or patch and block a tag that undersells it.'
+author: 'Michael Tarassov'
+branding:
+  icon: 'git-commit'
+  color: 'purple'
+
+inputs:
+  dir:
+    description: 'Module path inside the repository.'
+    required: false
+    default: '.'
+  from:
+    description: 'Old git ref: the tag or commit you are comparing against.'
+    required: true
+  to:
+    description: 'New git ref.'
+    required: false
+    default: 'HEAD'
+  expect:
+    description: 'The bump you intend to publish (major, minor or patch). When set, it replaces fail-on.'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Fail at this severity or above: major, minor, patch or never.'
+    required: false
+    default: 'major'
+  summary:
+    description: 'Append the markdown report to the job summary.'
+    required: false
+    default: 'true'
+  go-version:
+    description: 'Go toolchain used to build the CLI.'
+    required: false
+    default: '1.22'
+
+outputs:
+  severity:
+    description: 'The computed severity: major, minor or patch.'
+    value: ${{ steps.diff.outputs.severity }}
+  exit-code:
+    description: '0 when the change passed the gate, 1 when it was rejected.'
+    value: ${{ steps.diff.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+
+    - name: Build tf-module-api-diff
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -o "$RUNNER_TEMP/tf-module-api-diff" ./cmd/tf-module-api-diff
+
+    - name: Diff the module API
+      id: diff
+      shell: bash
+      env:
+        INPUT_DIR: ${{ inputs.dir }}
+        INPUT_FROM: ${{ inputs.from }}
+        INPUT_TO: ${{ inputs.to }}
+        INPUT_EXPECT: ${{ inputs.expect }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+      run: |
+        bin="$RUNNER_TEMP/tf-module-api-diff"
+        args=(--dir "$INPUT_DIR" --from "$INPUT_FROM" --to "$INPUT_TO" --fail-on "$INPUT_FAIL_ON")
+        if [ -n "$INPUT_EXPECT" ]; then
+          args+=(--expect "$INPUT_EXPECT")
+        fi
+
+        # Exit 1 means "the gate rejected this change", which is a result and
+        # not a crash. Composite steps run under `bash -e`, so the code has to
+        # be captured here or the step aborts before recording anything.
+        set +e
+        "$bin" "${args[@]}" --format json > "$RUNNER_TEMP/api-diff.json"
+        code=$?
+        set -e
+
+        if [ "$code" -gt 1 ]; then
+          cat "$RUNNER_TEMP/api-diff.json" || true
+          echo "::error::tf-module-api-diff could not read the module (exit $code)"
+          exit "$code"
+        fi
+
+        severity=$(grep -m1 '"severity"' "$RUNNER_TEMP/api-diff.json" | sed -E 's/.*"severity": *"([a-z]+)".*/\1/')
+        echo "severity=$severity" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [ "$INPUT_SUMMARY" = "true" ]; then
+          set +e
+          "$bin" "${args[@]}" --format markdown >> "$GITHUB_STEP_SUMMARY"
+          set -e
+        fi
+
+        if [ "$code" -ne 0 ]; then
+          echo "::error::module API change is $severity, which the configured gate rejects"
+        fi
+        exit "$code"

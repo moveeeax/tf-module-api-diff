@@ -1,0 +1,12 @@
+# Built binary at the repository root only, so cmd/tf-module-api-diff/ stays tracked.
+/tf-module-api-diff
+/dist/
+
+# Go test artifacts
+/*.test
+/coverage.out
+/coverage.html
+
+# Fixtures are part of the suite and are always tracked.
+!examples/**
+!**/testdata/**
