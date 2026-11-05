@@ -1,7 +1,7 @@
 # tf-module-api-diff
 
 [![ci](https://github.com/moveeeax/tf-module-api-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/tf-module-api-diff/actions/workflows/ci.yml)
-[![go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go)](https://go.dev)
+[![go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](https://go.dev)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Diffs the public API of a Terraform module between two git refs and tells you
@@ -116,11 +116,11 @@ jobs:
   api-diff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # the action needs both refs present
 
-      - uses: moveeeax/tf-module-api-diff@v0.1.0
+      - uses: moveeeax/tf-module-api-diff@v0
         id: api
         with:
           dir: modules/vpc
@@ -136,7 +136,7 @@ The action appends the markdown report to the job summary and exposes
 bump you are publishing and let the tool disagree:
 
 ```yaml
-      - uses: moveeeax/tf-module-api-diff@v0.1.0
+      - uses: moveeeax/tf-module-api-diff@v0
         with:
           from: ${{ steps.previous_tag.outputs.tag }}
           to: HEAD
