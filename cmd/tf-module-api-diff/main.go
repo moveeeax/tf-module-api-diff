@@ -15,7 +15,7 @@ import (
 	"github.com/moveeeax/tf-module-api-diff/internal/verdict"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 // Exit codes: 0 clean, 1 a gate rejected the change, 2 a usage or parse error.
 const (

@@ -30,9 +30,9 @@ inputs:
     required: false
     default: 'true'
   go-version:
-    description: 'Go toolchain used to build the CLI.'
+    description: 'Go toolchain used to build the CLI (any actions/setup-go version spec; must be 1.26 or newer).'
     required: false
-    default: '1.22'
+    default: 'stable'
 
 outputs:
   severity:
@@ -45,7 +45,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go-version }}
         cache: false
