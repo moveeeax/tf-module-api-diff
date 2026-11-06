@@ -11,11 +11,15 @@ import (
 	"github.com/moveeeax/tf-module-api-diff/internal/diff"
 	"github.com/moveeeax/tf-module-api-diff/internal/modapi"
 	"github.com/moveeeax/tf-module-api-diff/internal/render"
+	"github.com/moveeeax/tf-module-api-diff/internal/semver"
 	"github.com/moveeeax/tf-module-api-diff/internal/source"
 	"github.com/moveeeax/tf-module-api-diff/internal/verdict"
 )
 
 const version = "0.2.0"
+
+// latestTag is the --from value that asks for the previous release tag.
+const latestTag = "latest-tag"
 
 // Exit codes: 0 clean, 1 a gate rejected the change, 2 a usage or parse error.
 const (
@@ -33,6 +37,8 @@ type options struct {
 	format      string
 	expect      string
 	failOn      string
+	tagPrefix   string
+	suggest     bool
 	showVersion bool
 }
 
@@ -52,13 +58,15 @@ func main() {
 func parseFlags() options {
 	var opts options
 	flag.StringVar(&opts.dir, "dir", ".", "module path inside the repository")
-	flag.StringVar(&opts.from, "from", "", "old git ref (tag, branch or commit)")
+	flag.StringVar(&opts.from, "from", "", "old git ref (tag, branch or commit), or latest-tag for the highest release tag reachable from --to")
 	flag.StringVar(&opts.to, "to", "", "new git ref (tag, branch or commit)")
 	flag.StringVar(&opts.fromDir, "from-dir", "", "old module directory, instead of a git ref")
 	flag.StringVar(&opts.toDir, "to-dir", "", "new module directory, instead of a git ref")
 	flag.StringVar(&opts.format, "format", "table", "output format: table, json or markdown")
 	flag.StringVar(&opts.expect, "expect", "", "the bump you intend to publish: major, minor or patch")
 	flag.StringVar(&opts.failOn, "fail-on", "major", "fail at this severity or above: major, minor, patch or never")
+	flag.StringVar(&opts.tagPrefix, "tag-prefix", "", "release tag prefix for latest-tag and --suggest-version, such as vpc/")
+	flag.BoolVar(&opts.suggest, "suggest-version", false, "print the next release tag after applying the computed severity")
 	flag.BoolVar(&opts.showVersion, "version", false, "print the version and exit")
 	flag.Usage = usage
 	flag.Parse()
@@ -71,6 +79,7 @@ func usage() {
 
 Usage:
   tf-module-api-diff --from <ref> --to <ref> [--dir <module>] [flags]
+  tf-module-api-diff --from latest-tag --to HEAD [--tag-prefix vpc/] [--suggest-version] [flags]
   tf-module-api-diff --from-dir <path> --to-dir <path> [flags]
 
 Flags:
@@ -101,6 +110,14 @@ func run(opts options, stdout io.Writer) (int, error) {
 
 	result := diff.Diff(oldAPI, newAPI)
 	result.From, result.To, result.Dir = from, to, opts.dir
+
+	if opts.suggest {
+		prev, err := semver.Parse(from, opts.tagPrefix)
+		if err != nil {
+			return exitError, fmt.Errorf("--suggest-version needs --from to be a release tag: %w", err)
+		}
+		result.NextVersion = prev.Bump(result.Severity).String()
+	}
 
 	switch opts.format {
 	case "table":
@@ -139,6 +156,9 @@ func load(opts options) (oldFiles, newFiles map[string]string, from, to string, 
 	case usingDirs && usingRefs:
 		return nil, nil, "", "", fmt.Errorf("use either --from/--to or --from-dir/--to-dir, not both")
 	case usingDirs:
+		if opts.suggest {
+			return nil, nil, "", "", fmt.Errorf("--suggest-version needs git refs, not --from-dir/--to-dir")
+		}
 		if opts.fromDir == "" || opts.toDir == "" {
 			return nil, nil, "", "", fmt.Errorf("--from-dir and --to-dir must be given together")
 		}
@@ -159,13 +179,33 @@ func load(opts options) (oldFiles, newFiles map[string]string, from, to string, 
 		if err != nil {
 			return nil, nil, "", "", err
 		}
-		if oldFiles, err = source.FromRef(repo, opts.from, opts.dir); err != nil {
+		from := opts.from
+		if from == latestTag {
+			if from, err = previousTag(repo, opts.to, opts.tagPrefix); err != nil {
+				return nil, nil, "", "", err
+			}
+		}
+		if oldFiles, err = source.FromRef(repo, from, opts.dir); err != nil {
 			return nil, nil, "", "", err
 		}
 		if newFiles, err = source.FromRef(repo, opts.to, opts.dir); err != nil {
 			return nil, nil, "", "", err
 		}
-		return oldFiles, newFiles, opts.from, opts.to, nil
+		return oldFiles, newFiles, from, opts.to, nil
 	}
 	return nil, nil, "", "", fmt.Errorf("nothing to compare: pass --from/--to or --from-dir/--to-dir")
+}
+
+// previousTag resolves --from latest-tag: the highest release tag under prefix
+// that is reachable from to, not counting tags on to itself.
+func previousTag(repo, to, prefix string) (string, error) {
+	tags, err := source.TagsBefore(repo, to, prefix)
+	if err != nil {
+		return "", err
+	}
+	_, tag, ok := semver.Highest(tags, prefix)
+	if !ok {
+		return "", fmt.Errorf("no release tag matching %q is reachable from %s", prefix+"[v]MAJOR.MINOR.PATCH", to)
+	}
+	return tag, nil
 }

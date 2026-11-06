@@ -47,12 +47,15 @@ Stdlib only, no Terraform binary, no provider download, no network.
 $ tf-module-api-diff --from v1.3.0 --to HEAD
 $ tf-module-api-diff --dir modules/vpc --from v2.1.0 --to HEAD --expect minor
 $ tf-module-api-diff --from-dir ./old --to-dir ./new --format markdown
+$ tf-module-api-diff --dir modules/vpc --from latest-tag --tag-prefix vpc/ --to HEAD --suggest-version
 ```
 
 | flag | meaning |
 | --- | --- |
 | `--dir` | module path inside the repository, default `.` |
-| `--from`, `--to` | git refs: tags, branches or commits |
+| `--from`, `--to` | git refs: tags, branches or commits; `--from latest-tag` picks the previous release tag |
+| `--tag-prefix` | release tag prefix such as `vpc/`, for `latest-tag` and `--suggest-version`; default empty |
+| `--suggest-version` | print the next release tag after applying the computed severity |
 | `--from-dir`, `--to-dir` | two plain directories instead of refs |
 | `--format` | `table`, `json` or `markdown` |
 | `--expect` | the bump you intend to publish; replaces `--fail-on` when set |
@@ -106,6 +109,34 @@ $ tf-module-api-diff --dir modules/vpc --from v2.1.0 --to v2.2.0
 Only `.tf` files directly in that directory count. A nested directory is a
 separate module with its own API.
 
+## Previous tag and next version
+
+Release workflows usually spend a step finding the last tag. `--from
+latest-tag` does it: it takes the highest release tag reachable from `--to`,
+leaving out tags on the `--to` commit itself, so the answer is the same before
+and after you tag the release. A release tag is `--tag-prefix`, an optional
+`v` and `MAJOR.MINOR.PATCH`. Pre-release tags such as `v1.3.0-rc.1` and tags
+under other prefixes are skipped. Versions compare as numbers, so `v1.10.0`
+beats `v1.9.0`.
+
+Monorepos that tag each module separately pass the prefix:
+
+```console
+$ tf-module-api-diff --dir modules/vpc --from latest-tag --tag-prefix vpc/ --to HEAD --suggest-version
+modules/vpc: vpc/v1.2.3 -> HEAD
+severity: minor
+next version: vpc/v1.3.0
+...
+```
+
+`--suggest-version` bumps the `--from` tag by the computed severity: major
+resets to `X+1.0.0` (also on `0.x`, since a break is a break for callers),
+minor to `X.Y+1.0`, patch, including "nothing changed", to `X.Y.Z+1`. The prefix
+and the `v` are kept. It needs `--from` to be a release tag under the prefix,
+either given directly or found by `latest-tag`; a branch name or `--from-dir`
+is a usage error. The JSON report carries it as `next_version`, and `from`
+holds the tag `latest-tag` resolved to.
+
 ## GitHub Action
 
 ```yaml
@@ -132,15 +163,36 @@ jobs:
 ```
 
 The action appends the markdown report to the job summary and exposes
-`severity` and `exit-code` as outputs. To gate a release instead, declare the
-bump you are publishing and let the tool disagree:
+`severity`, `previous-tag`, `next-version` and `exit-code` as outputs. `from`
+defaults to `latest-tag`. To gate a release instead, declare the bump you are
+publishing and let the tool disagree:
 
 ```yaml
       - uses: moveeeax/tf-module-api-diff@v0
         with:
-          from: ${{ steps.previous_tag.outputs.tag }}
           to: HEAD
           expect: minor
+```
+
+Or let it pick the tag. With `suggest-version: true` the action is the whole
+release step for a module in a monorepo:
+
+```yaml
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # tags and history for latest-tag
+
+      - uses: moveeeax/tf-module-api-diff@v0
+        id: api
+        with:
+          dir: modules/vpc
+          tag-prefix: vpc/
+          suggest-version: true
+          fail-on: never
+
+      - run: |
+          git tag "${{ steps.api.outputs.next-version }}"
+          git push origin "${{ steps.api.outputs.next-version }}"
 ```
 
 ## Examples
