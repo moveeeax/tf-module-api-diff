@@ -17,6 +17,9 @@ func Table(w io.Writer, r diff.Result) error {
 		header = r.Dir + ": " + header
 	}
 	fmt.Fprintf(w, "%s\nseverity: %s\n", header, r.Severity)
+	if r.NextVersion != "" {
+		fmt.Fprintf(w, "next version: %s\n", r.NextVersion)
+	}
 	if !r.Changed() {
 		fmt.Fprintln(w, "\nno public API changes")
 		return nil
@@ -55,6 +58,9 @@ func Markdown(w io.Writer, r diff.Result) error {
 		fmt.Fprintf(w, "Module: `%s`\n\n", r.Dir)
 	}
 	fmt.Fprintf(w, "**Severity: %s**\n\n", r.Severity)
+	if r.NextVersion != "" {
+		fmt.Fprintf(w, "Next version: `%s`\n\n", r.NextVersion)
+	}
 	if !r.Changed() {
 		fmt.Fprintln(w, "No public API changes.")
 		return nil

@@ -67,6 +67,9 @@ type Result struct {
 	Severity Severity `json:"-"`
 	Level    string   `json:"severity"`
 	Changes  []Change `json:"changes"`
+
+	// NextVersion is the suggested release tag, set only with --suggest-version.
+	NextVersion string `json:"next_version,omitempty"`
 }
 
 // Changed reports whether anything differs at all.

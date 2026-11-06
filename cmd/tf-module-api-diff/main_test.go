@@ -231,6 +231,103 @@ func TestGitRefsResolveInARepository(t *testing.T) {
 	}
 }
 
+func TestLatestTagPicksThePreviousReleaseAndSuggestsTheNext(t *testing.T) {
+	repo := t.TempDir()
+	g := func(args ...string) {
+		t.Helper()
+		gitCmd(t, repo, args...)
+	}
+	g("init", "--quiet", "--initial-branch=main")
+	g("config", "user.name", "Fixture")
+	g("config", "user.email", "fixture@example.com")
+
+	commit := func(example, msg string, tags ...string) {
+		t.Helper()
+		removeTF(t, repo)
+		copyDir(t, filepath.Join(examples, example), repo)
+		g("add", "-A")
+		g("commit", "--quiet", "--allow-empty", "-m", msg)
+		for _, tag := range tags {
+			g("tag", tag)
+		}
+	}
+	commit("vpc-v1.0.0", "vpc 1.0.0", "vpc/v1.0.0", "v7.0.0")
+	commit("vpc-v1.0.0", "unrelated module", "eks/v9.0.0", "vpc/v1.1.0-rc.1")
+	commit("vpc-v1.1.0", "vpc 1.1.0", "vpc/v1.1.0")
+	commit("vpc-v1.1.1", "vpc 1.1.1")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+
+	opts := options{
+		dir: ".", from: latestTag, to: "HEAD", tagPrefix: "vpc/", suggest: true,
+		format: "table", failOn: "major",
+	}
+	code, out, err := runOut(t, opts)
+	if code != 0 {
+		t.Fatalf("exit %d (%v)\n%s", code, err, out)
+	}
+	for _, want := range []string{"vpc/v1.1.0 -> HEAD", "severity: patch", "next version: vpc/v1.1.1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Once HEAD carries its own tag, the previous release is still v1.1.0.
+	g("tag", "vpc/v1.1.1")
+	if _, out, _ := runOut(t, opts); !strings.Contains(out, "vpc/v1.1.0 -> HEAD") {
+		t.Errorf("a tag on --to itself was picked as the previous release:\n%s", out)
+	}
+
+	// From the 1.1.0 commit back to 1.0.0, the change is minor.
+	opts.to = "vpc/v1.1.0"
+	opts.format = "json"
+	_, out, err = runOut(t, opts)
+	var got struct {
+		From        string `json:"from"`
+		Severity    string `json:"severity"`
+		NextVersion string `json:"next_version"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, out)
+	}
+	if got.From != "vpc/v1.0.0" || got.Severity != "minor" || got.NextVersion != "vpc/v1.1.0" {
+		t.Errorf("json = %+v", got)
+	}
+
+	// No prefix: the bare tags v7.0.0 count, the prefixed ones do not parse.
+	opts = options{dir: ".", from: latestTag, to: "HEAD", suggest: true, format: "table", failOn: "never"}
+	if _, out, err := runOut(t, opts); !strings.Contains(out, "v7.0.0 -> HEAD") || !strings.Contains(out, "next version: v7.1.0") {
+		t.Errorf("without a prefix (%v):\n%s", err, out)
+	}
+
+	// A prefix with no release under it is a usage error.
+	opts = options{dir: ".", from: latestTag, to: "HEAD", tagPrefix: "rds/", format: "table", failOn: "major"}
+	if code, _, err := runOut(t, opts); code != exitError || err == nil || !strings.Contains(err.Error(), "rds/") {
+		t.Errorf("missing prefix: exit %d, err %v", code, err)
+	}
+
+	// --suggest-version cannot bump a branch name.
+	opts = options{dir: ".", from: "main", to: "HEAD", suggest: true, format: "table", failOn: "major"}
+	if code, _, err := runOut(t, opts); code != exitError || err == nil {
+		t.Errorf("suggest from a branch: exit %d, err %v", code, err)
+	}
+}
+
+func TestSuggestVersionRejectsDirectories(t *testing.T) {
+	opts := dirs("vpc-v1.0.0", "vpc-v1.1.0")
+	opts.suggest = true
+	if code, _, err := runOut(t, opts); code != exitError || err == nil {
+		t.Errorf("exit %d, err %v", code, err)
+	}
+}
+
 func gitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

@@ -11,8 +11,13 @@ inputs:
     required: false
     default: '.'
   from:
-    description: 'Old git ref: the tag or commit you are comparing against.'
-    required: true
+    description: 'Old git ref: the tag or commit you are comparing against, or latest-tag for the highest release tag (under tag-prefix) reachable from `to`.'
+    required: false
+    default: 'latest-tag'
+  tag-prefix:
+    description: 'Release tag prefix for monorepos that tag each module, such as vpc/. Used by latest-tag and suggest-version.'
+    required: false
+    default: ''
   to:
     description: 'New git ref.'
     required: false
@@ -25,6 +30,10 @@ inputs:
     description: 'Fail at this severity or above: major, minor, patch or never.'
     required: false
     default: 'major'
+  suggest-version:
+    description: 'Compute the next release tag from `from` and the severity, exposed as the next-version output. `from` must then be a release tag.'
+    required: false
+    default: 'false'
   summary:
     description: 'Append the markdown report to the job summary.'
     required: false
@@ -38,6 +47,12 @@ outputs:
   severity:
     description: 'The computed severity: major, minor or patch.'
     value: ${{ steps.diff.outputs.severity }}
+  previous-tag:
+    description: 'The ref compared against: `from` as given, or the tag latest-tag resolved to.'
+    value: ${{ steps.diff.outputs.previous-tag }}
+  next-version:
+    description: 'The next release tag (for example vpc/v1.3.0), set only when suggest-version is true.'
+    value: ${{ steps.diff.outputs.next-version }}
   exit-code:
     description: '0 when the change passed the gate, 1 when it was rejected.'
     value: ${{ steps.diff.outputs.exit-code }}
@@ -62,12 +77,20 @@ runs:
         INPUT_DIR: ${{ inputs.dir }}
         INPUT_FROM: ${{ inputs.from }}
         INPUT_TO: ${{ inputs.to }}
+        INPUT_TAG_PREFIX: ${{ inputs.tag-prefix }}
+        INPUT_SUGGEST_VERSION: ${{ inputs.suggest-version }}
         INPUT_EXPECT: ${{ inputs.expect }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_SUMMARY: ${{ inputs.summary }}
       run: |
         bin="$RUNNER_TEMP/tf-module-api-diff"
         args=(--dir "$INPUT_DIR" --from "$INPUT_FROM" --to "$INPUT_TO" --fail-on "$INPUT_FAIL_ON")
+        if [ -n "$INPUT_TAG_PREFIX" ]; then
+          args+=(--tag-prefix "$INPUT_TAG_PREFIX")
+        fi
+        if [ "$INPUT_SUGGEST_VERSION" = "true" ]; then
+          args+=(--suggest-version)
+        fi
         if [ -n "$INPUT_EXPECT" ]; then
           args+=(--expect "$INPUT_EXPECT")
         fi
@@ -87,7 +110,11 @@ runs:
         fi
 
         severity=$(grep -m1 '"severity"' "$RUNNER_TEMP/api-diff.json" | sed -E 's/.*"severity": *"([a-z]+)".*/\1/')
+        previous=$(grep -m1 '"from"' "$RUNNER_TEMP/api-diff.json" | sed -E 's/.*"from": *"(.*)",?$/\1/')
+        next=$(grep -m1 '"next_version"' "$RUNNER_TEMP/api-diff.json" | sed -E 's/.*"next_version": *"(.*)",?$/\1/' || true)
         echo "severity=$severity" >> "$GITHUB_OUTPUT"
+        echo "previous-tag=$previous" >> "$GITHUB_OUTPUT"
+        echo "next-version=$next" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
         if [ "$INPUT_SUMMARY" = "true" ]; then

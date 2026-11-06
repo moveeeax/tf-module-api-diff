@@ -90,6 +90,34 @@ func FromRef(repo, ref, moduleDir string) (map[string]string, error) {
 	return files, nil
 }
 
+// TagsBefore lists the tags reachable from ref that start with prefix, leaving
+// out tags on ref's own commit: when ref is the release being cut (or already
+// tagged), the previous release is the one before it, not itself.
+func TagsBefore(repo, ref, prefix string) ([]string, error) {
+	if _, err := git(repo, "rev-parse", "--verify", ref+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("ref %q not found in %s: %w", ref, repo, err)
+	}
+	merged, err := git(repo, "tag", "--merged", ref)
+	if err != nil {
+		return nil, err
+	}
+	onRef, err := git(repo, "tag", "--points-at", ref)
+	if err != nil {
+		return nil, err
+	}
+	skip := map[string]bool{}
+	for _, t := range strings.Fields(onRef) {
+		skip[t] = true
+	}
+	var tags []string
+	for _, t := range strings.Fields(merged) {
+		if strings.HasPrefix(t, prefix) && !skip[t] {
+			tags = append(tags, t)
+		}
+	}
+	return tags, nil
+}
+
 // RepoRoot resolves the repository that contains dir.
 func RepoRoot(dir string) (string, error) {
 	out, err := git(dir, "rev-parse", "--show-toplevel")
