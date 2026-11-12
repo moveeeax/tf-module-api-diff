@@ -81,6 +81,27 @@ jobs:
           expect_exit 0 --from-dir examples/vpc-v1.1.0 --to-dir examples/vpc-v2.0.0 --fail-on never
           expect_exit 2 --from-dir examples/vpc-v1.0.0 --to-dir examples/nope
 
+      - name: The checked-in contract matches its module and gates the others
+        run: |
+          ./tf-module-api-diff --write-contract - --to-dir examples/vpc-v1.1.0 > /tmp/contract.json
+          diff -u examples/vpc-v1.1.0/api.contract.json /tmp/contract.json
+
+          ./tf-module-api-diff --contract examples/vpc-v1.1.0/api.contract.json \
+            --to-dir examples/vpc-v1.1.0 --fail-on patch
+          ./tf-module-api-diff --contract examples/vpc-v1.1.0/api.contract.json \
+            --to-dir examples/vpc-v1.1.1
+          set +e
+          ./tf-module-api-diff --contract examples/vpc-v1.1.0/api.contract.json \
+            --to-dir examples/vpc-v2.0.0 --format junit > /tmp/report.xml
+          got=$?
+          set -e
+          if [ "$got" -ne 1 ]; then
+            echo "exit $got, want 1"
+            cat /tmp/report.xml
+            exit 1
+          fi
+          grep -q 'failures="4"' /tmp/report.xml
+
       - name: The markdown report is renderable
         run: |
           set +e

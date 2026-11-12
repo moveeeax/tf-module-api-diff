@@ -1,0 +1,78 @@
+{
+  "contract": 1,
+  "variables": {
+    "cidr_block": {
+      "type": "string",
+      "default": "\"10.0.0.0/16\"",
+      "nullable": true,
+      "sensitive": false,
+      "description": "IPv4 CIDR of the VPC.",
+      "validations": 1
+    },
+    "enable_nat": {
+      "type": "bool",
+      "default": "true",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Create a NAT gateway for the private subnets.",
+      "validations": 0
+    },
+    "flow_log_destination": {
+      "type": "any",
+      "default": "null",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Where flow logs are shipped. Any shape the provider accepts.",
+      "validations": 0
+    },
+    "name": {
+      "type": "string",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Name prefix for every resource in the module.",
+      "validations": 0
+    },
+    "single_nat_gateway": {
+      "type": "bool",
+      "default": "false",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Share one NAT gateway across every private subnet.",
+      "validations": 0
+    },
+    "subnets": {
+      "type": "map(object({ cidr = string, public = optional(bool), az = optional(string) }))",
+      "default": "{}",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Subnets to create, keyed by name.",
+      "validations": 0
+    },
+    "tags": {
+      "type": "map(string)",
+      "default": "{}",
+      "nullable": true,
+      "sensitive": false,
+      "description": "Tags applied to every resource.",
+      "validations": 0
+    }
+  },
+  "outputs": {
+    "flow_log_role_arn": {
+      "sensitive": false,
+      "description": "ARN of the role used to publish flow logs."
+    },
+    "nat_gateway_ids": {
+      "sensitive": false,
+      "description": "NAT gateway IDs, empty when enable_nat is false."
+    },
+    "subnet_ids": {
+      "sensitive": false,
+      "description": "Subnet IDs keyed by subnet name."
+    },
+    "vpc_id": {
+      "sensitive": false,
+      "description": "ID of the created VPC."
+    }
+  }
+}

@@ -48,6 +48,8 @@ $ tf-module-api-diff --from v1.3.0 --to HEAD
 $ tf-module-api-diff --dir modules/vpc --from v2.1.0 --to HEAD --expect minor
 $ tf-module-api-diff --from-dir ./old --to-dir ./new --format markdown
 $ tf-module-api-diff --dir modules/vpc --from latest-tag --tag-prefix vpc/ --to HEAD --suggest-version
+$ tf-module-api-diff --dir modules/vpc --write-contract modules/vpc/api.contract.json
+$ tf-module-api-diff --dir modules/vpc --contract modules/vpc/api.contract.json --format junit
 ```
 
 | flag | meaning |
@@ -57,7 +59,9 @@ $ tf-module-api-diff --dir modules/vpc --from latest-tag --tag-prefix vpc/ --to 
 | `--tag-prefix` | release tag prefix such as `vpc/`, for `latest-tag` and `--suggest-version`; default empty |
 | `--suggest-version` | print the next release tag after applying the computed severity |
 | `--from-dir`, `--to-dir` | two plain directories instead of refs |
-| `--format` | `table`, `json` or `markdown` |
+| `--contract` | a contract file as the old side, checked against `--to-dir`, `--dir` at `--to`, or `--dir` in the working tree |
+| `--write-contract` | write the module's API to this contract file (`-` for stdout) and exit |
+| `--format` | `table`, `json`, `markdown` or `junit` |
 | `--expect` | the bump you intend to publish; replaces `--fail-on` when set |
 | `--fail-on` | `major`, `minor`, `patch` or `never`, default `major` |
 
@@ -137,6 +141,58 @@ either given directly or found by `latest-tag`; a branch name or `--from-dir`
 is a usage error. The JSON report carries it as `next_version`, and `from`
 holds the tag `latest-tag` resolved to.
 
+## Contract file
+
+Comparing against a tag needs the tag. A contract file is a checked-in
+snapshot of the API instead, so the module's own pipeline catches a renamed
+output on the pull request that renames it, with no history and no release
+yet. Generate it from the module as it stands:
+
+```console
+$ tf-module-api-diff --dir modules/vpc --write-contract modules/vpc/api.contract.json
+wrote modules/vpc/api.contract.json: 7 variables, 4 outputs
+```
+
+Then check the module against it in CI. The contract is the old side, so every
+gate works as with refs: the default `--fail-on major` lets additive changes
+through and rejects removals, renames (a rename is `OUTPUT_REMOVED` plus
+`OUTPUT_ADDED`), narrowed types and new sensitivity; `--fail-on patch` demands
+an exact match; `--expect` checks the bump you are about to tag.
+
+```console
+$ tf-module-api-diff --dir modules/vpc --contract modules/vpc/api.contract.json
+modules/vpc: modules/vpc/api.contract.json -> working tree
+severity: major
+
+SEVERITY  CHANGE          TARGET         DETAIL
+MAJOR     OUTPUT_REMOVED  output.vpc_id  anything referencing this output will fail to resolve
+MINOR     OUTPUT_ADDED    output.id      new output, nothing to break
+
+1 major, 1 minor, 0 patch
+tf-module-api-diff: major change exceeds --fail-on major: OUTPUT_REMOVED on output.vpc_id
+```
+
+A deliberate API change is a regenerated contract in the same pull request,
+which puts the change in front of the reviewer as a diff of the file.
+
+The file is JSON with sorted keys, one entry per variable and output; see
+[`examples/vpc-v1.1.0/api.contract.json`](examples/vpc-v1.1.0/api.contract.json).
+A variable records `type` (canonical), `default` (the HCL expression text,
+absent when the input is required), `nullable`, `sensitive`, `description` and
+the number of `validations`. An output records `sensitive` and `description`
+only: Terraform output blocks have no type or nullability argument, and the
+value's type is only known once Terraform evaluates the module, which this tool
+does not do. In a hand-written file an omitted field takes Terraform's default
+(`type` any, `nullable` true, no default); an unknown field is an error, so a
+typo cannot quietly turn a check off.
+
+## JUnit report
+
+`--format junit` writes JUnit XML for a CI test tab. Each change is a test
+case named after its target and kind; the changes the gate rejects fail with
+the detail as the message, the rest pass. An unchanged API is one passing
+case. The exit code is the same as with any other format.
+
 ## GitHub Action
 
 ```yaml
@@ -164,7 +220,8 @@ jobs:
 
 The action appends the markdown report to the job summary and exposes
 `severity`, `previous-tag`, `next-version` and `exit-code` as outputs. `from`
-defaults to `latest-tag`. To gate a release instead, declare the bump you are
+defaults to `latest-tag`. `junit: api-diff.xml` also writes the JUnit report
+there for a test-report step to pick up. To gate a release instead, declare the bump you are
 publishing and let the tool disagree:
 
 ```yaml
@@ -193,6 +250,18 @@ release step for a module in a monorepo:
       - run: |
           git tag "${{ steps.api.outputs.next-version }}"
           git push origin "${{ steps.api.outputs.next-version }}"
+```
+
+To check a contract file instead of a previous tag, pass `contract`; `from`,
+`tag-prefix` and `suggest-version` are then ignored, and the module is read at
+`to`:
+
+```yaml
+      - uses: moveeeax/tf-module-api-diff@v0
+        with:
+          dir: modules/vpc
+          contract: modules/vpc/api.contract.json
+          junit: api-diff.xml
 ```
 
 ## Examples

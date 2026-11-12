@@ -328,6 +328,184 @@ func TestSuggestVersionRejectsDirectories(t *testing.T) {
 	}
 }
 
+// exampleContract is the checked-in contract of examples/vpc-v1.1.0.
+var exampleContract = filepath.Join(examples, "vpc-v1.1.0", "api.contract.json")
+
+func contractOpts(contract, toDir string) options {
+	return options{dir: ".", contract: contract, toDir: toDir, format: "table", failOn: "major"}
+}
+
+func TestCheckedInExampleContractMatchesItsModule(t *testing.T) {
+	var buf bytes.Buffer
+	opts := options{dir: ".", toDir: filepath.Join(examples, "vpc-v1.1.0"), writeTo: "-"}
+	if code, err := run(opts, &buf); code != exitOK {
+		t.Fatalf("exit %d (%v)", code, err)
+	}
+	want, err := os.ReadFile(exampleContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != string(want) {
+		t.Errorf("%s is stale; regenerate it with --write-contract:\n%s", exampleContract, buf.String())
+	}
+}
+
+func TestContractClassifiesTheExampleRevisions(t *testing.T) {
+	cases := []struct {
+		to       string
+		severity string
+		exit     int
+		kind     string
+	}{
+		{"vpc-v1.1.0", "patch", 0, "no public API changes"},
+		{"vpc-v1.1.1", "patch", 0, "VARIABLE_DEFAULT_CHANGED"},
+		{"vpc-v2.0.0", "major", 1, "OUTPUT_SENSITIVE_ADDED"},
+		// Going back to 1.0.0 drops an output and an input: a break.
+		{"vpc-v1.0.0", "major", 1, "OUTPUT_REMOVED"},
+	}
+	for _, c := range cases {
+		code, out, err := runOut(t, contractOpts(exampleContract, filepath.Join(examples, c.to)))
+		if code != c.exit {
+			t.Errorf("contract -> %s: exit %d, want %d (%v)", c.to, code, c.exit, err)
+		}
+		for _, want := range []string{"api.contract.json -> ", "severity: " + c.severity, c.kind} {
+			if !strings.Contains(out, want) {
+				t.Errorf("contract -> %s: output missing %q:\n%s", c.to, want, out)
+			}
+		}
+	}
+}
+
+func TestContractGatesAndJUnit(t *testing.T) {
+	// --fail-on patch turns the contract into an exact match.
+	opts := contractOpts(exampleContract, filepath.Join(examples, "vpc-v1.1.1"))
+	opts.failOn = "patch"
+	if code, _, _ := runOut(t, opts); code != exitGate {
+		t.Errorf("fail-on patch with patch drift: exit %d, want %d", code, exitGate)
+	}
+
+	opts = contractOpts(exampleContract, filepath.Join(examples, "vpc-v2.0.0"))
+	opts.format = "junit"
+	code, out, _ := runOut(t, opts)
+	if code != exitGate {
+		t.Errorf("exit %d, want %d", code, exitGate)
+	}
+	for _, want := range []string{`<testsuites name="tf-module-api-diff" tests="8" failures="4">`,
+		`name="output.flow_log_role_arn OUTPUT_SENSITIVE_ADDED"`, `<system-out>patch: description text only</system-out>`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("junit missing %q:\n%s", want, out)
+		}
+	}
+
+	// A declared major lets the same change through, and no case fails.
+	opts.expect = "major"
+	code, out, _ = runOut(t, opts)
+	if code != exitOK || !strings.Contains(out, `failures="0"`) {
+		t.Errorf("expect major: exit %d\n%s", code, out)
+	}
+}
+
+func TestWriteContractThenCheckTheWorkingTree(t *testing.T) {
+	mod := t.TempDir()
+	copyDir(t, filepath.Join(examples, "vpc-v1.1.0"), mod)
+	path := filepath.Join(t.TempDir(), "api.contract.json")
+
+	code, out, err := runOut(t, options{dir: mod, writeTo: path})
+	if code != exitOK || !strings.Contains(out, "7 variables, 4 outputs") {
+		t.Fatalf("write: exit %d (%v)\n%s", code, err, out)
+	}
+
+	opts := options{dir: mod, contract: path, format: "json", failOn: "major"}
+	if code, out, err := runOut(t, opts); code != exitOK || !strings.Contains(out, `"to": "working tree"`) {
+		t.Errorf("unchanged module: exit %d (%v)\n%s", code, err, out)
+	}
+
+	// Rename an output in place: the contract sees a removal and an addition.
+	outputs := filepath.Join(mod, "outputs.tf")
+	body, err := os.ReadFile(outputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := strings.Replace(string(body), `output "vpc_id"`, `output "id"`, 1)
+	if err := os.WriteFile(outputs, []byte(renamed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.format = "table"
+	code, out, err = runOut(t, opts)
+	if code != exitGate || !strings.Contains(out, "OUTPUT_REMOVED") || !strings.Contains(out, "output.vpc_id") {
+		t.Errorf("renamed output: exit %d (%v)\n%s", code, err, out)
+	}
+	if err == nil || !strings.Contains(err.Error(), "OUTPUT_REMOVED on output.vpc_id") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestContractAgainstAGitRef(t *testing.T) {
+	repo := t.TempDir()
+	g := func(args ...string) {
+		t.Helper()
+		gitCmd(t, repo, args...)
+	}
+	g("init", "--quiet", "--initial-branch=main")
+	g("config", "user.name", "Fixture")
+	g("config", "user.email", "fixture@example.com")
+	mod := filepath.Join(repo, "modules", "vpc")
+	if err := os.MkdirAll(mod, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyDir(t, filepath.Join(examples, "vpc-v2.0.0"), mod)
+	g("add", "-A")
+	g("commit", "--quiet", "-m", "vpc 2.0.0")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractPath, err := filepath.Abs(exampleContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+
+	opts := options{dir: "modules/vpc", contract: contractPath, to: "HEAD", format: "table", failOn: "major"}
+	code, out, err := runOut(t, opts)
+	if code != exitGate || !strings.Contains(out, "modules/vpc: ") || !strings.Contains(out, "-> HEAD") {
+		t.Errorf("exit %d (%v)\n%s", code, err, out)
+	}
+}
+
+func TestContractUsageErrorsExitTwo(t *testing.T) {
+	v110 := filepath.Join(examples, "vpc-v1.1.0")
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"contract": 1, "outputs": {"id": {"sensitve": true}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]options{
+		"contract and from": func() options {
+			o := contractOpts(exampleContract, v110)
+			o.toDir, o.from, o.to = "", "v1.0.0", "HEAD"
+			return o
+		}(),
+		"contract and from-dir": func() options { o := contractOpts(exampleContract, v110); o.fromDir = v110; return o }(),
+		"contract and suggest":  func() options { o := contractOpts(exampleContract, v110); o.suggest = true; return o }(),
+		"to and to-dir":         func() options { o := contractOpts(exampleContract, v110); o.to = "HEAD"; return o }(),
+		"missing contract":      contractOpts(filepath.Join(t.TempDir(), "nope.json"), v110),
+		"misspelt contract":     contractOpts(bad, v110),
+		"write and contract":    {dir: ".", toDir: v110, writeTo: "-", contract: exampleContract},
+		"write and from-dir":    {dir: ".", toDir: v110, writeTo: "-", fromDir: v110},
+		"write without module":  {dir: t.TempDir(), writeTo: "-"},
+	}
+	for name, opts := range cases {
+		code, _, err := runOut(t, opts)
+		if code != exitError || err == nil {
+			t.Errorf("%s: exit %d, err %v; want %d and an error", name, code, err, exitError)
+		}
+	}
+}
+
 func gitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

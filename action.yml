@@ -18,6 +18,10 @@ inputs:
     description: 'Release tag prefix for monorepos that tag each module, such as vpc/. Used by latest-tag and suggest-version.'
     required: false
     default: ''
+  contract:
+    description: 'Contract file (from --write-contract) to check the module at `to` against. When set, `from`, `tag-prefix` and `suggest-version` are not used.'
+    required: false
+    default: ''
   to:
     description: 'New git ref.'
     required: false
@@ -38,6 +42,10 @@ inputs:
     description: 'Append the markdown report to the job summary.'
     required: false
     default: 'true'
+  junit:
+    description: 'Write a JUnit XML report to this path, for a test-report step to publish. Empty to skip.'
+    required: false
+    default: ''
   go-version:
     description: 'Go toolchain used to build the CLI (any actions/setup-go version spec; must be 1.26 or newer).'
     required: false
@@ -48,7 +56,7 @@ outputs:
     description: 'The computed severity: major, minor or patch.'
     value: ${{ steps.diff.outputs.severity }}
   previous-tag:
-    description: 'The ref compared against: `from` as given, or the tag latest-tag resolved to.'
+    description: 'The ref compared against: `from` as given, the tag latest-tag resolved to, or the contract path.'
     value: ${{ steps.diff.outputs.previous-tag }}
   next-version:
     description: 'The next release tag (for example vpc/v1.3.0), set only when suggest-version is true.'
@@ -82,14 +90,22 @@ runs:
         INPUT_EXPECT: ${{ inputs.expect }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_CONTRACT: ${{ inputs.contract }}
+        INPUT_JUNIT: ${{ inputs.junit }}
       run: |
         bin="$RUNNER_TEMP/tf-module-api-diff"
-        args=(--dir "$INPUT_DIR" --from "$INPUT_FROM" --to "$INPUT_TO" --fail-on "$INPUT_FAIL_ON")
-        if [ -n "$INPUT_TAG_PREFIX" ]; then
-          args+=(--tag-prefix "$INPUT_TAG_PREFIX")
-        fi
-        if [ "$INPUT_SUGGEST_VERSION" = "true" ]; then
-          args+=(--suggest-version)
+        args=(--dir "$INPUT_DIR" --to "$INPUT_TO" --fail-on "$INPUT_FAIL_ON")
+        if [ -n "$INPUT_CONTRACT" ]; then
+          # The contract is the old side, so from and the tag inputs drop out.
+          args+=(--contract "$INPUT_CONTRACT")
+        else
+          args+=(--from "$INPUT_FROM")
+          if [ -n "$INPUT_TAG_PREFIX" ]; then
+            args+=(--tag-prefix "$INPUT_TAG_PREFIX")
+          fi
+          if [ "$INPUT_SUGGEST_VERSION" = "true" ]; then
+            args+=(--suggest-version)
+          fi
         fi
         if [ -n "$INPUT_EXPECT" ]; then
           args+=(--expect "$INPUT_EXPECT")
@@ -116,6 +132,12 @@ runs:
         echo "previous-tag=$previous" >> "$GITHUB_OUTPUT"
         echo "next-version=$next" >> "$GITHUB_OUTPUT"
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [ -n "$INPUT_JUNIT" ]; then
+          set +e
+          "$bin" "${args[@]}" --format junit > "$INPUT_JUNIT"
+          set -e
+        fi
 
         if [ "$INPUT_SUMMARY" = "true" ]; then
           set +e
