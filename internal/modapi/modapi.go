@@ -38,6 +38,20 @@ func (v *Variable) ParsedType() *typeexpr.Type {
 	return v.parsedType
 }
 
+// SetType parses expr as the variable's type constraint and stores both the
+// canonical text and the parsed form. Code that builds a Variable without
+// reading HCL, such as a contract file loader, uses it so the type compares
+// the same way a scanned one does.
+func (v *Variable) SetType(expr string) error {
+	parsed, err := typeexpr.Parse(normalize(expr))
+	if err != nil {
+		return err
+	}
+	v.parsedType = parsed
+	v.Type = parsed.String()
+	return nil
+}
+
 // Output is one value the module publishes.
 type Output struct {
 	Name        string `json:"name"`
@@ -112,12 +126,9 @@ func readVariable(file string, b hclscan.Block) (*Variable, error) {
 	v := &Variable{Name: b.Labels[0], File: file, Nullable: true}
 
 	rawType, _ := hclscan.AttrValue(attrs, "type")
-	parsed, err := typeexpr.Parse(normalize(rawType))
-	if err != nil {
+	if err := v.SetType(rawType); err != nil {
 		return nil, fmt.Errorf("%s: variable %q: type: %w", file, v.Name, err)
 	}
-	v.parsedType = parsed
-	v.Type = parsed.String()
 
 	if raw, ok := hclscan.AttrValue(attrs, "default"); ok {
 		v.HasDefault = true

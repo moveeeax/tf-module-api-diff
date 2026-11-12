@@ -1,8 +1,9 @@
-// Package render turns a diff result into the three output formats.
+// Package render turns a diff result into the output formats.
 package render
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"strings"
@@ -80,6 +81,96 @@ func JSON(w io.Writer, r diff.Result) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
+}
+
+// JUnit writes a JUnit XML report so a CI test tab shows the gate's decision.
+// Every change is one test case; the ones rejects returns true for are
+// failures, the rest pass with their detail as output. An unchanged API is a
+// single passing case, so the report is never an empty suite.
+func JUnit(w io.Writer, r diff.Result, rejects func(diff.Change) bool) error {
+	name := fmt.Sprintf("module API %s -> %s", label(r.From), label(r.To))
+	classname := "tf-module-api-diff"
+	if r.Dir != "" && r.Dir != "." {
+		name = r.Dir + ": " + name
+		classname += "." + r.Dir
+	}
+
+	suite := junitSuite{Name: name}
+	suite.Properties = append(suite.Properties,
+		junitProperty{Name: "severity", Value: r.Level},
+		junitProperty{Name: "from", Value: r.From},
+		junitProperty{Name: "to", Value: r.To},
+	)
+	if r.NextVersion != "" {
+		suite.Properties = append(suite.Properties, junitProperty{Name: "next_version", Value: r.NextVersion})
+	}
+
+	for _, c := range r.Changes {
+		tc := junitCase{Classname: classname, Name: c.Target + " " + c.Kind}
+		if rejects != nil && rejects(c) {
+			tc.Failure = &junitFailure{
+				Message: c.Level + " change rejected by the gate: " + c.Detail,
+				Type:    c.Kind,
+				Text:    c.Level + " " + c.Kind + " on " + c.Target + ": " + c.Detail,
+			}
+			suite.Failures++
+		} else {
+			tc.SystemOut = c.Level + ": " + c.Detail
+		}
+		suite.Cases = append(suite.Cases, tc)
+	}
+	if !r.Changed() {
+		suite.Cases = append(suite.Cases, junitCase{Classname: classname, Name: "public API unchanged"})
+	}
+	suite.Tests = len(suite.Cases)
+
+	doc := junitSuites{Name: "tf-module-api-diff", Tests: suite.Tests, Failures: suite.Failures, Suites: []junitSuite{suite}}
+	if _, err := io.WriteString(w, xml.Header); err != nil {
+		return err
+	}
+	enc := xml.NewEncoder(w)
+	enc.Indent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
+}
+
+type junitSuites struct {
+	XMLName  xml.Name     `xml:"testsuites"`
+	Name     string       `xml:"name,attr"`
+	Tests    int          `xml:"tests,attr"`
+	Failures int          `xml:"failures,attr"`
+	Suites   []junitSuite `xml:"testsuite"`
+}
+
+type junitSuite struct {
+	Name       string          `xml:"name,attr"`
+	Tests      int             `xml:"tests,attr"`
+	Failures   int             `xml:"failures,attr"`
+	Errors     int             `xml:"errors,attr"`
+	Skipped    int             `xml:"skipped,attr"`
+	Properties []junitProperty `xml:"properties>property"`
+	Cases      []junitCase     `xml:"testcase"`
+}
+
+type junitProperty struct {
+	Name  string `xml:"name,attr"`
+	Value string `xml:"value,attr"`
+}
+
+type junitCase struct {
+	Classname string        `xml:"classname,attr"`
+	Name      string        `xml:"name,attr"`
+	Failure   *junitFailure `xml:"failure,omitempty"`
+	SystemOut string        `xml:"system-out,omitempty"`
+}
+
+type junitFailure struct {
+	Message string `xml:"message,attr"`
+	Type    string `xml:"type,attr"`
+	Text    string `xml:",chardata"`
 }
 
 func label(s string) string {

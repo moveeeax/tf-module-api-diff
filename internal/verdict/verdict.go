@@ -19,6 +19,18 @@ type Verdict struct {
 	Exit   int
 	Reason string // why the run failed, empty when it passed
 	Note   string // advisory text that does not affect the exit code
+
+	// Gated is false when no gate is active (--fail-on never, or --expect
+	// major). Otherwise every change at Threshold or above is one the gate
+	// rejects.
+	Gated     bool
+	Threshold diff.Severity
+}
+
+// Rejects reports whether the active gate blocks a change of c's severity.
+// The JUnit report uses it to mark individual changes as failed tests.
+func (v Verdict) Rejects(c diff.Change) bool {
+	return v.Gated && c.Severity >= v.Threshold
 }
 
 // Decide evaluates failOn ("major", "minor", "patch" or "never") and expect
@@ -30,6 +42,9 @@ func Decide(r diff.Result, failOn, expect string) (Verdict, error) {
 		want, err := diff.ParseSeverity(expect)
 		if err != nil {
 			return v, fmt.Errorf("--expect: %w", err)
+		}
+		if want < diff.Major {
+			v.Gated, v.Threshold = true, want+1
 		}
 		switch {
 		case r.Severity > want:
@@ -50,6 +65,7 @@ func Decide(r diff.Result, failOn, expect string) (Verdict, error) {
 	if err != nil {
 		return v, fmt.Errorf("--fail-on: %w", err)
 	}
+	v.Gated, v.Threshold = true, threshold
 	if r.Changed() && r.Severity >= threshold {
 		v.Exit = 1
 		v.Reason = fmt.Sprintf("%s change exceeds --fail-on %s: %s",

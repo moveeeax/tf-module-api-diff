@@ -97,3 +97,35 @@ func TestDecideRejectsUnknownWords(t *testing.T) {
 		t.Error("--expect huge should fail")
 	}
 }
+
+func TestRejectsMarksChangesTheGateBlocks(t *testing.T) {
+	change := func(sev diff.Severity) diff.Change { return diff.Change{Severity: sev} }
+	cases := []struct {
+		failOn, expect string
+		rejected       []diff.Severity
+	}{
+		{"major", "", []diff.Severity{diff.Major}},
+		{"minor", "", []diff.Severity{diff.Major, diff.Minor}},
+		{"patch", "", []diff.Severity{diff.Major, diff.Minor, diff.Patch}},
+		{"never", "", nil},
+		// --expect replaces --fail-on: a declared minor rejects only majors.
+		{"patch", "minor", []diff.Severity{diff.Major}},
+		{"major", "patch", []diff.Severity{diff.Major, diff.Minor}},
+		{"patch", "major", nil},
+	}
+	for _, c := range cases {
+		v, err := Decide(result(diff.Patch, false), c.failOn, c.expect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sev := range []diff.Severity{diff.Major, diff.Minor, diff.Patch} {
+			want := false
+			for _, r := range c.rejected {
+				want = want || r == sev
+			}
+			if got := v.Rejects(change(sev)); got != want {
+				t.Errorf("fail-on %s expect %q: Rejects(%s) = %v, want %v", c.failOn, c.expect, sev, got, want)
+			}
+		}
+	}
+}
