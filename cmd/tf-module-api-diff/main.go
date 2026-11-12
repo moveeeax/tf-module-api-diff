@@ -18,7 +18,7 @@ import (
 	"github.com/moveeeax/tf-module-api-diff/internal/verdict"
 )
 
-const version = "0.2.0"
+const version = "0.4.0"
 
 // latestTag is the --from value that asks for the previous release tag.
 const latestTag = "latest-tag"
